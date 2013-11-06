@@ -2,9 +2,14 @@
 
 You have been provided with a lab environment that consists of a chef
 server, a swift management node, a swift proxy, and three swift
-storage nodes.
+storage nodes.  Unfortunately, we tend to use the terms "controller",
+"management server" and "admin server" to describe the same box -- the
+server that has the role spc-starter-controller.  Please bear this in
+mind as you proceed!
 
 First, log on to the chef server as root using the provided password.
+This is the only server that has knife configured in these
+environments, so you will interact with chef from here.
 
 Take a look around.
 
@@ -13,6 +18,15 @@ Take a look around.
 	knife role list
     knife environment list
     knife environment edit swift-private-cloud
+
+In your environment, ensure that the configured swift endpoints are
+configured with your proxy server's ip address.
+
+The provided environment is the minimal specification for installing
+swift.  More information on configuration options is available in
+environments.md as well as the default attributes files for
+swift-private-cloud and swift-lite.  Generally it is preferable to set
+swift-private-cloud attributes when they exist.
 
 We've already uploaded a minimal environment and the cookbooks you
 will need.  We've taken the liberty of installing chef client on all
@@ -101,7 +115,7 @@ Please note that you will need the 192.168 address for each of the storage nodes
     swift-ring-builder account.builder create 8 3 0
 
     swift-ring-builder object.builder add z1-${STORAGE1}:6000/disk1 100
-    swift-ring-builder object.builder add z2-$(ip_for_host storage2):6000/disk1 100
+    swift-ring-builder object.builder add z2-${STORAGE2}:6000/disk1 100
     swift-ring-builder object.builder add z3-${STORAGE3}:6000/disk1 100
 
     swift-ring-builder container.builder add z1-${STORAGE1}:6001/disk1 100
@@ -120,32 +134,29 @@ Please note that you will need the 192.168 address for each of the storage nodes
 
 ## Configure your disks! ##
 
-Your storage nodes all have unpartitioned space on /dev/xvda.
-Partition these drives--use the remainder of the space in a new
-partition!  Run the partprobe.  Format them with the xfs!  On real
-deployments, you will want to be careful to use -i size=512 on your
-mkfs.xfs, but here it doesn't really matter.  We provide some helpful
-scripts for formatting disks as part of the cookbooks.  See the
-support wiki or ask Marcelo for more information!
+From the management node:
 
-Once you are done:
+    su - swiftops
+	dsh -Mcg swift-storage sudo parted -s /dev/xvda mkpart primary xfs 21.5GB 100%
+	dsh -Mcg swift-storage sudo /usr/local/bin/swift-format.sh xvda2
+	dsh -Mcg swift-storage sudo mkdir -p /srv/node/disk1
+	dsh -Mcg swift-storage sudo mount /dev/xvda2 /srv/node/disk1 -o noatime,nodiratime,nobarrier,logbufs=8
+	dsh -Mcg swift-storage sudo chown -R swift: /srv/node/disk1
 
-    mkdir -p /srv/node/disk1
-    mount /dev/xvda2 /srv/node/disk1 -o noatime,nodiratime,nobarrier,logbufs=8
-	chown -R swift: /srv/node/disk1
-
+The support wiki has more information on performing this work in
+production environments.
 
 ## Copy the rings over! ##
 
-On all of the storage nodes and the proxy server, run:
+From the management node as the swiftops user, run:
 
-    /usr/bin/swift-ring-minion-server -f -o
+    dsh -Mcg swift sudo /usr/bin/swift-ring-minion-server -f -o
 
 Now that the rings have been copied over, swift services will actually
 start appropriately.
 
-Run chef-client once more on all of the storage and proxy nodes to get
-the services started.
+Run chef-client once more on all of the nodes to get the services
+started.
 
 
 ## Profit ##
@@ -157,3 +168,8 @@ play with the swift cli tool a little.  Enjoy your victory.  Proceed
 to the next lab, in which you can play with the environment!  Or skip
 that one and jump directly to the middleware lab, which will actually
 provide you with some interesting swift commands to run.
+
+On the management server:
+
+    source ~/.openrc
+	swift stat
