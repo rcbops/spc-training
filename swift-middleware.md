@@ -1,159 +1,206 @@
-# Installing Swift #
+# Installing Custom Middleware #
 
-You have been provided with a lab environment that consists of a chef
-server, a swift management node, a swift proxy, and three swift
-storage nodes.
+Sometimes, middleware needs to be added or configured differently than
+the assumptions made in the swift-private-cloud cookbook.
 
-First, log on to the chef server as root using the provided password.
+Fortunately, there are provisions for modifying to configurations to
+achieve different goals.
 
-Take a look around.
+As an example, let's install Swift's "Static Web" middleware, as
+described in the [OpenStack Object Storage
+manual](http://docs.openstack.org/api/openstack-object-storage/1.0/content/Create_Static_Website-dle4000.html).
 
-    knife node list
-	knife cookbook list
-	knife role list
-    knife environment list
-    knife environment edit swift-private-cloud
+According to this documentation, the proxy server configuration must
+be changed to include the following sections:
 
-We've already uploaded a minimal environment and the cookbooks you
-will need.  We've taken the liberty of installing chef client on all
-of your nodes as well.
+    [DEFAULT]
+    ...
 
-You can proceed directly to the fun part -- installing swift.
+    [pipeline:main]
+    pipeline = healthcheck cache tempauth staticweb proxy-server
 
+    ...
 
-## The initial runs ##
+    [filter:staticweb]
+    use = egg:swift#staticweb
+    # Seconds to cache container x-container-meta-web-* header values.
+    # cache_timeout = 300
+    # You can override the default log routing for this filter here:
+    # set log_name = staticweb
+    # set log_facility = LOG_LOCAL0
+    # set log_level = INFO
+    # set access_log_name = staticweb
+    # set access_log_facility = LOG_LOCAL0
+    # set access_log_level = INFO
+    # set log_headers = False
 
-We'll start with the management server.
+In general, only two things need to be done. A middleware stanza must
+be added for staticweb, and it must be added to the application
+pipeline. Simple enough.
 
-First, look at the role
+## Swift Config Files ##
 
-    knife role show spc-starter-controller
+In prior cookbooks, configuration files were only able to be templated
+to the degree that the chef templates were wired to allow it. With the
+new swift cookbooks, however, all values in all the major config files
+are able to be customized.
 
-The controller is somewhat special.  It is used as a syslog
-consolidation server as well as a mail forwarder in the config.  As a
-result, its recipes are not very composable with proxies or storage
-node recipes, that are configured as clients of the controller.  This
-is one area where composability is somewhat weak.
+The config files themselves are stored as a big json blob in chef
+itself. These json blobs are serialized into the config files on each
+run.
 
-You can see that the keystone recipe is included.  For environments
-that will use an existing keystone (from a compute cluster, for
-example), you can remove this role and provide some extra attributes.
-We will not be doing this in any of the labs, but the process is
-documented in environments.md.
+For example, a section of the account server config file might look
+like this:
 
-Add the role to your controller's run_list:
+    [DEFAULT]
+    backlog = 4096
+    bind_ip = 0.0.0.0
+    bind_port = 6002
+    workers = 6
 
-    knife node run_list add labN-swift-management-server role[spc-starter-controller]
+    [filter:healthcheck]
+    use = egg:swift#healthcheck
 
-Log on to the controller and run chef-client.  Wait for the run to
-complete.  Chat amongst yourselves.  Discuss your amazing learnings.
-Poke around at some of the other .md files in this repo.  Tell Will
-Kelly how much you love this training so far.  But not sarcastically.
-That would hurt his feelings.
+    [app:account-server]
+    use = egg:swift#account
 
-Next, the storage nodes.
+    [pipeline:main]
+    pipeline = healthcheck account-server
 
-    for i in labN-swift-storage-server-{1..3}; do
-	    knife node run_list add $i role[spc-starter-storage]
-    done
+The json blob that corresponds to this config snippet is at
+`node['swift-private-cloud']['account']['config']`, and looks like
+this:
 
-Now for the proxy node.  You can have as many of these as you like,
-but the cookbooks do not provide a load balancing solution.  It is
-expected that the customer will provide a loadbalanced vip.  Since you
-get to set the endpoints up in the environment, you can easily
-configure the endpoints to use a vip instead of an individual proxy
-server.  We aren't doing that here, though.
+    {
+      "DEFAULT": {
+        "backlog": 4096,
+        "bind_ip": "0.0.0.0",
+    	 "bind_port": 6002,
+    	 "workers": 6
+      },
+      "filter:healthcheck": {
+        "use": "egg:swift#healthcheck"
+      },
+      "pipeline:main": {
+        "pipeline": "healthcheck account-server"
+      }
+    }
 
-    knife node run_list add labN-swift-proxy-servers-1 role[spc-starter-proxy]
+The configuration doesn't have to be specified as a json blob,
+however. Individual settings can be overridden in the environment with
+an attribute like this:
 
-Log on to all of these nodes and run chef-client.
+    "override_attributes": {
+      "swift-private-cloud": {
+        "account": {
+          "config": {
+            "DEFAULT": {
+              "workers": 12
+            }
+          }
+        }
+      }
+      ... other config values omitted ...
+    }
 
-Wait for all of the chef-clients to finish and then a good 30 seconds
-or so for solr indexing to catch up on the chef server, then run
-chef-client once more on the admin node.  The admin node has dsh /
-pssh configured for the swiftops user to ease your cluster
-administration needs.  The final chef run on the admin node updates
-these configs.
+Which will leave the default configuration intact, with the exception
+of the single override on default workers.
 
+In a like manner, the following configuration files can be overriden
+at the following environment locations:
 
-## Create the ring ##
+| Config File | Attribute Location |
+|-------------|--------------------|
+| /etc/swift/object-server.conf | node['swift-private-cloud']['object']['config'] |
+| /etc/swift/container-server.conf | node['swift-private-cloud']['container']['config'] |
+| /etc/swift/account-server.conf | node['swift-private-cloud']['account']['config'] |
+| /etc/swift/proxy-server.conf | node['swift-private-cloud']['proxy']['config'] |
+| /etc/swift/object-expirer.conf | node['swift-private-cloud']['object-expirer']['config'] |
 
-Even though our disks are not yet configured, we know what the ring is
-going to look like for these servers, so let's make it.  The support
-wiki has information on some provided scripts for use in production
-deployments to make this process easier.  There are some important
-decisions that go into picking some of these numbers.  This is well
-documented in the swift documentation as well as on the support wiki
-and Marcelo will likely go into this in his training.
+## Adding Static Web Middleware ##
 
-Here, though, we are going to take advantage of the fact that this is
-a throwaway deployment and worry about nothing at all.
+So, given the configuration information above, the task of adding the
+staticweb middleware becomes a problem of defining the config file
+overrides necessary to cause the correct config to be dropped on the
+proxy servers.
 
-Please note that you will need the 192.168 address for each of the storage nodes.
+Since this is a modification to proxy-server.conf, we must modify the
+json blob in `node['swift-private-cloud']['proxy']['config']`. We need
+to add a section called `"filter:staticweb"` with the key/value pair
+(`"use"` `"egg:swift#staticweb"`).
 
-    export STORAGE1=192.168.122.X
-	export STORAGE2=192.168.122.Y
-	export STORAGE3=192.168.122.Z
-	cd /etc/swift
+This can be accomplished with an override attribute in the environment:
 
-    swift-ring-builder object.builder create 8 3 0
-    swift-ring-builder container.builder create 8 3 0
-    swift-ring-builder account.builder create 8 3 0
+    "override_attributes": {
+      "swift-private-cloud": {
+        "proxy": {
+          "config": {
+            "filter:staticweb": {
+              "use": "egg:swift#staticweb"
+            }
+          }
+        }
+      }
+    }
 
-    swift-ring-builder object.builder add z1-${STORAGE1}:6000/disk1 100
-    swift-ring-builder object.builder add z2-$(ip_for_host storage2):6000/disk1 100
-    swift-ring-builder object.builder add z3-${STORAGE3}:6000/disk1 100
+In addition, the pipeline must be changed to add the staticweb
+middleware. The documentation is a little bit off, as what we really
+want to do is add the staticweb middleware into the existing proxy
+pipeline. Changing the pipeline to what is documented in the OpenStack
+docs would result in losing a number of important pipeline
+middleware. Looking at the [default config
+values](http://github.com/rcbops-cookbooks/swift-private-cloud/blob/master/attributes/default.rb#L152)
+for the proxy server, we can see that the default pipeline
+(`node['swift-private-cloud']['proxy']['config']['pipeline:main']['pipeline']`)
+is `"catch_errors proxy-logging healthcheck cache ratelimit authtoken
+keystoneauth proxy-logging proxy-server"`.
 
-    swift-ring-builder container.builder add z1-${STORAGE1}:6001/disk1 100
-    swift-ring-builder container.builder add z2-${STORAGE2}:6001/disk1 100
-    swift-ring-builder container.builder add z3-${STORAGE3}:6001/disk1 100
+We'll just add the staticweb module right before proxy-server, as it
+was in the documentation:
 
-    swift-ring-builder account.builder add z1-${STORAGE1}:6002/disk1 100
-    swift-ring-builder account.builder add z2-${STORAGE2}:6002/disk1 100
-    swift-ring-builder account.builder add z3-${STORAGE3}:6002/disk1 100
+    "override_attributes": {
+      "swift-private-cloud": {
+        "proxy": {
+          "config": {
+            "pipeline:main": {
+              "pipeline": "catch_errors proxy-logging healthcheck cache ratelimit authtoken keystoneauth proxy-logging staticweb proxy-server"
+            }
+          }
+        }
+      }
+    }
 
-    swift-ring-builder object.builder rebalance
-    swift-ring-builder container.builder rebalance
-    swift-ring-builder account.builder rebalance
+The combined environment might look something like this:
 
-    chown -R swift: .
+    "override_attributes": {
+      "swift-private-cloud": {
+        "proxy": {
+          "config": {
+            "filter:staticweb": {
+              "use": "egg:swift#staticweb"
+            },
+            "pipeline:main": {
+              "pipeline": "catch_errors proxy-logging healthcheck cache ratelimit authtoken keystoneauth proxy-logging staticweb proxy-server"
+            }
+          }
+        }
+      }
+    }
 
-## Configure your disks! ##
+## Try It ##
 
-Your storage nodes all have unpartitioned space on /dev/xvda.
-Partition these drives--use the remainder of the space in a new
-partition!  Run the partprobe.  Format them with the xfs!  On real
-deployments, you will want to be careful to use -i size=512 on your
-mkfs.xfs, but here it doesn't really matter.  We provide some helpful
-scripts for formatting disks as part of the cookbooks.  See the
-support wiki or ask Marcelo for more information!
+1.  Edit the environment to add the environment suggested above
+2.  Run chef-client on the proxy
+3.  Observe that the config file has been changed (`/etc/swift/proxy-server.conf`)
+4.  Make a web site:
+  1.  ssh into the proxy server (as root?)
+  2.  `source .openrc`
+  3.  `echo "<html><h1>Hi</h1></html>" > index.html`
+  4.  `swift upload web index.html`
+  5.  `swift post -r '.r:*' web`
+  6.  `swift post -m 'web-index:index.html' web`
+  7.  view at http://`<proxy-ip>`:8080/v1/`<account>`/web (account looks like `AUTH_<hex digits>`, and can be found with `swift stat`)
 
-Once you are done:
+## Summary ##
 
-    mkdir -p /srv/node/disk1
-    mount /dev/xvda2 /srv/node/disk1 -o noatime,nodiratime,nobarrier,logbufs=8
-	chown -R swift: /srv/node/disk1
-
-
-## Copy the rings over! ##
-
-On all of the storage nodes and the proxy server, run:
-
-    /usr/bin/swift-ring-minion-server -f -o
-
-Now that the rings have been copied over, swift services will actually
-start appropriately.
-
-Run chef-client once more on all of the storage and proxy nodes to get
-the services started.
-
-
-## Profit ##
-
-At this point, you should have a working swift installation.
-
-On the admin server, we drop an openrc file in /root.  Source it and
-play with the swift cli tool a little.  Enjoy your victory.  Proceed
-to the next lab, in which you can play with the environment!  Or skip
-that one and jump directly to the middleware lab, which will actually
-provide you with some interesting swift commands to run.
+Customizing your swifts.  YOU CAN DO IT!
