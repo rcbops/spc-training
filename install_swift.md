@@ -160,6 +160,8 @@ start appropriately.
 Run chef-client once more on all of the nodes to get the services
 started.
 
+     dsh -Mcg swift sudo chef-client
+
 
 ## Profit ##
 
