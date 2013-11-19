@@ -103,6 +103,8 @@ and Marcelo will likely go into this in his training.
 Here, though, we are going to take advantage of the fact that this is
 a throwaway deployment and worry about nothing at all.
 
+On the management node as the root user, run the following.
+
 Please note that you will need the 192.168 address for each of the storage nodes.
 
     export STORAGE1=192.168.122.X
